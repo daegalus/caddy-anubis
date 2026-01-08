@@ -1,7 +1,7 @@
 package caddyanubis
 
 import (
-	"log/slog"
+	"context"
 	"net/http"
 
 	"github.com/TecharoHQ/anubis"
@@ -24,10 +24,11 @@ type AnubisMiddleware struct {
 	Target       *string `json:"target,omitempty"`
 	AnubisPolicy *policy.ParsedConfig
 	AnubisServer *libanubis.Server
-	Next         caddyhttp.Handler
 
 	logger *zap.Logger
 }
+
+type nextKey struct{}
 
 // CaddyModule returns the Caddy module information.
 func (AnubisMiddleware) CaddyModule() caddy.ModuleInfo {
@@ -56,7 +57,9 @@ func (m *AnubisMiddleware) Provision(ctx caddy.Context) error {
 			if m.Target != nil {
 				http.Redirect(w, r, *m.Target, http.StatusTemporaryRedirect)
 			} else {
-				m.Next.ServeHTTP(w, r)
+				if next, ok := r.Context().Value(nextKey{}).(caddyhttp.Handler); ok {
+					next.ServeHTTP(w, r)
+				}
 			}
 		}),
 		Policy:         m.AnubisPolicy,
@@ -78,10 +81,12 @@ func (m *AnubisMiddleware) Validate() error {
 // ServeHTTP implements caddyhttp.MiddlewareHandler.
 func (m *AnubisMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	m.logger.Info("Anubis middleware processing request")
-	slog.SetLogLoggerLevel(slog.LevelDebug)
 	m.logger.Info("Anubis middleware sending request")
-	m.Next = next
-	m.AnubisServer.ServeHTTP(w, r)
+
+	// Inject the next handler into the context so the callback can retrieve it
+	ctx := context.WithValue(r.Context(), nextKey{}, next)
+
+	m.AnubisServer.ServeHTTP(w, r.WithContext(ctx))
 	return nil
 }
 
