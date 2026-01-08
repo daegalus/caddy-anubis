@@ -17,7 +17,8 @@ import (
 func init() {
 	caddy.RegisterModule(AnubisMiddleware{})
 	httpcaddyfile.RegisterHandlerDirective("anubis", parseCaddyfile)
-	httpcaddyfile.RegisterDirectiveOrder("anubis", httpcaddyfile.After, "templates")
+	// Execute before basic_auth to protect authentication endpoints from bots
+	httpcaddyfile.RegisterDirectiveOrder("anubis", httpcaddyfile.Before, "basic_auth")
 }
 
 type AnubisMiddleware struct {
@@ -52,13 +53,18 @@ func (m *AnubisMiddleware) Provision(ctx caddy.Context) error {
 
 	m.AnubisServer, err = libanubis.New(libanubis.Options{
 		Next: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			m.logger.Info("Anubis middleware calling next")
+			m.logger.Debug("Anubis middleware calling next")
 
 			if m.Target != nil {
 				http.Redirect(w, r, *m.Target, http.StatusTemporaryRedirect)
 			} else {
 				if next, ok := r.Context().Value(nextKey{}).(caddyhttp.Handler); ok {
-					next.ServeHTTP(w, r)
+					if err := next.ServeHTTP(w, r); err != nil {
+						m.logger.Error("Next handler returned error", zap.Error(err))
+					}
+				} else {
+					m.logger.Error("Next handler missing from context")
+					w.WriteHeader(http.StatusInternalServerError)
 				}
 			}
 		}),
@@ -80,8 +86,7 @@ func (m *AnubisMiddleware) Validate() error {
 
 // ServeHTTP implements caddyhttp.MiddlewareHandler.
 func (m *AnubisMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
-	m.logger.Info("Anubis middleware processing request")
-	m.logger.Info("Anubis middleware sending request")
+	m.logger.Debug("Anubis middleware processing request")
 
 	// Inject the next handler into the context so the callback can retrieve it
 	ctx := context.WithValue(r.Context(), nextKey{}, next)
